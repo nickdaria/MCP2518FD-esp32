@@ -1,0 +1,31 @@
+menu "MCP2518FD Configuration"
+
+    config MCP2518_ASSERT
+        bool "Enable assertions"
+        default y
+        help
+            If this is set, assertion checks are enabled and failed assertions will
+            crash the application.
+    config MCP2518_DEBUG_PRINT
+        bool "Enable debug prints"
+        default n
+        help
+            Enables rather verbose printing that may be useful for debugging, e.g.
+            printing on every register read and write
+
+    config MCP2518_CRC_READ
+        bool "Enable CRC check on register reads"
+        default n
+        help
+            If enabled, all register reads will use the READ_CRC opcode and compare the CRC
+            read from the MCP2518FD with one calculated locally
+
+    config MCP2518_ATTR
+        bool "Place fast path functions in IRAM"
+        default n
+        help
+            Places "fast path" functions, i.e. sending and receiving messages, into
+            IRAM rather than flash memory, thus decreasing the likelihood of experencing
+            instruction cache misses
+
+endmenu
