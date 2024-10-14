@@ -1,0 +1,47 @@
+menu "MCP2518FD Example"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    choice
+        prompt "SPI Host"
+        config SPI2_ENABLE
+            bool "SPI2"
+        config SPI3_ENABLE
+            bool "SPI3"
+    endchoice
+
+    config SPI_CS_PIN
+    int "SPI CS"
+    range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+    default 15
+
+    config SPI_MOSI_PIN
+    int "SPI MOSI"
+    range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+    default 12
+
+    config SPI_MISO_PIN
+    int "SPI MISO"
+    range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+    default 13
+
+    config SPI_CLK_PIN
+    int "SPI Clock"
+    range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+    default 14
+
+    config RX_INTR_PIN
+    int "RX interrupt input"
+    range -1 ENV_GPIO_IN_RANGE_MAX
+    default -1
+    help
+        INT1 on MCP2518FD. -1 indicates unused
+
+    config TX_INTR_PIN
+    int "TX interrupt input"
+    range -1 ENV_GPIO_IN_RANGE_MAX
+    default -1
+    help
+        INT0 on MCP2518FD. -1 indicates unused
+
+endmenu

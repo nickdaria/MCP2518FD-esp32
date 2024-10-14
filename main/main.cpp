@@ -9,13 +9,17 @@
 
 constinit cbm::MCP2518 mcp;
 
-constexpr gpio_num_t cPrimarySpiCsPin = GPIO_NUM_15;
-constexpr gpio_num_t cSpiMosiPin      = GPIO_NUM_12;
-constexpr gpio_num_t cSpiMisoPin      = GPIO_NUM_13;
-constexpr gpio_num_t cSpiClkPin       = GPIO_NUM_14;
-constexpr gpio_num_t cRxIntrPin       = GPIO_NUM_4;
-constexpr gpio_num_t cTxIntrPin       = GPIO_NUM_27;
+constexpr gpio_num_t cPrimarySpiCsPin = static_cast<gpio_num_t>(CONFIG_SPI_CS_PIN);
+constexpr gpio_num_t cSpiMosiPin      = static_cast<gpio_num_t>(CONFIG_SPI_MOSI_PIN);
+constexpr gpio_num_t cSpiMisoPin      = static_cast<gpio_num_t>(CONFIG_SPI_MISO_PIN);
+constexpr gpio_num_t cSpiClkPin       = static_cast<gpio_num_t>(CONFIG_SPI_CLK_PIN);
+constexpr gpio_num_t cRxIntrPin       = static_cast<gpio_num_t>(CONFIG_RX_INTR_PIN);
+constexpr gpio_num_t cTxIntrPin       = static_cast<gpio_num_t>(CONFIG_TX_INTR_PIN);
+#ifdef CONFIG_SPI2_ENABLE
 constexpr spi_host_device_t cSpiHost  = SPI2_HOST;
+#elif defined(CONFIG_SPI3_ENABLE)
+constexpr spi_host_device_t cSpiHost  = SPI3_HOST;
+#endif
 
 static const char* TAG = "MCP2518FD Example";
 
