@@ -67,6 +67,7 @@ void MCP2518::begin(const Config& config)
         .intr_type = GPIO_INTR_ANYEDGE
     };
 
+#ifdef CONFIG_MCP2518_INSTALL_GPIO_ISR
     if (!_isr_service_installed) {
         // GPIO ISR service can only be installed once
         // This check will prevent MCP2518s from trying to install it twice,
@@ -75,6 +76,7 @@ void MCP2518::begin(const Config& config)
         _isr_service_installed = true;
         gpio_install_isr_service(ESP_INTR_FLAG_LEVEL2);
     }
+#endif
 
     if (_rx_intr_pin != GPIO_NUM_NC) {
         gpio_cfg.pin_bit_mask = BIT64(_rx_intr_pin);
@@ -109,6 +111,8 @@ void MCP2518::begin(const Config& config)
     // DMA buffers must be 32-bit aligned per ESP
     _tx_buffer = heap_caps_aligned_alloc(4, cMaxTxPayloadSize, MALLOC_CAP_DMA);
     _rx_buffer = heap_caps_aligned_alloc(4, cMaxRxPayloadSize, MALLOC_CAP_DMA);
+
+    MCP2518_ASSERT(_tx_buffer && _rx_buffer);
 
     memset(_tx_buffer, 0, cMaxTxPayloadSize);
 

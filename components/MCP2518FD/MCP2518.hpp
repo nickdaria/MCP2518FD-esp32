@@ -215,7 +215,7 @@ public:
      * @brief Checks that a message is available, then reads from the RX FIFO if so
      * 
      * @param rx_fifo_index RX FIFO from which to read message
-     * @param frame Output. CAN 2.0 frame
+     * @param frame Output. CAN 2.0 or FD frame
      * @return Status `SUCCESS` or `NO_MSG` if no message is available
      */
     template<typename Frame_t>
@@ -228,7 +228,7 @@ public:
     /**
      * @brief Checks that a message is available, then reads from the RX FIFO if so
      * 
-     * @param frame Output. CAN 2.0 frame
+     * @param frame Output. CAN 2.0 or FD frame
      * @param timestamp Output. In microseconds, unchanged if `NO_MSG`
      * @return Status `SUCCESS` or `NO_MSG` if no message is available
      * 

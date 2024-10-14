@@ -28,4 +28,12 @@ menu "MCP2518FD Configuration"
             IRAM rather than flash memory, thus decreasing the likelihood of experencing
             instruction cache misses
 
+    config MCP2518_INSTALL_GPIO_ISR
+        bool "Install GPIO ISR Service"
+        default y
+        help
+            Controls whether this component installs the GPIO ISR service. This needs to be done somewhere, so
+            if another component in the application already installs the service, this option allows for this component
+            to skip this step.
+
 endmenu
