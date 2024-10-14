@@ -1,3 +1,19 @@
+/*
+ * Copyright 2024 Circuit Board Medics
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -290,6 +306,53 @@ public:
     {
         return SendMessage(0, frame);
     }
+
+    /**
+     * @brief Queues CAN 2.0 frame without setting RTS
+     *
+     * @param tx_fifo_index Which TX FIFO, 0-30
+     * @param frame CAN 2.0 frame
+     * @return Status `SUCCESS` or `TX_ALL_BUSY` if TX FIFO is full
+     */
+    Status QueueMessage(uint8_t tx_fifo_index, const can_frame_t& frame);
+
+    /**
+     * @brief Queues CAN FD frame without setting RTS
+     *
+     * @param tx_fifo_index Which TX FIFO, 0-30
+     * @param frame CAN FD frame
+     * @return Status `SUCCESS` or `TX_ALL_BUSY` if TX FIFO is full
+     */
+    Status QueueMessage(uint8_t tx_fifo_index, const can_fd_frame_t& frame);
+
+    /**
+     * @brief Queues CAN 2.0 frame without setting RTS
+     *
+     * @param frame CAN 2.0 frame
+     * @return Status `SUCCESS` or `TX_ALL_BUSY` if TX FIFO is full
+     */
+    Status QueueMessage(const can_frame_t& frame)
+    {
+        return QueueMessage(0, frame);
+    }
+
+    /**
+     * @brief Queues CAN FD frame without setting RTS
+     *
+     * @param frame CAN FD frame
+     * @return Status `SUCCESS` or `TX_ALL_BUSY` if TX FIFO is full
+     */
+    Status QueueMessage(const can_fd_frame_t& frame)
+    {
+        return QueueMessage(0, frame);
+    }
+
+    /**
+     * @brief Set Tx FIFO ready to send and increment tail pointer on MCP2518
+     * 
+     * @param tx_fifo_index Which TX FIFO, 0-30
+     */
+    void SetTxRTS(uint8_t tx_fifo_index = 0);
 
     /**
      * @brief Set a filter. Messages matching it will be directed to the given RX FIFO
@@ -2123,24 +2186,6 @@ private:
         return _tx_fifos_base_addresses[tx_fifo_index]
             + (_tx_fifos_indices[tx_fifo_index]
                 * (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]));
-    }
-
-    /**
-     * @brief Increments the TX FIFO head locally and on MCP2518
-     *
-     * @param tx_fifo_index FIFO index 0-31
-     */
-    void incrementTxFifoAddress(size_t tx_fifo_index)
-    {
-        // increment locally
-        if (++_tx_fifos_indices[tx_fifo_index] == cTxFIFOSizes[tx_fifo_index]) {
-            _tx_fifos_indices[tx_fifo_index] = 0;
-        }
-        // increment on MCP
-        _fifo_configs[tx_fifo_index].UINC = 1;
-        _fifo_configs[tx_fifo_index].TXREQ = 1;
-        writeRegister(_fifo_configs[tx_fifo_index].address,
-                      _fifo_configs[tx_fifo_index].bits.to_ulong());
     }
 
     /********************

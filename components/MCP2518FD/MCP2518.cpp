@@ -1,3 +1,19 @@
+/*
+ * Copyright 2024 Circuit Board Medics
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -16,7 +32,7 @@
 #define MCP2518_FAST_PATH
 #endif
 
-#ifdef CONFIG_MCP2518_CRC_READ
+#ifdef CONFIG_MCP2518_CRC_ENABLE
 #include "MCP2518CRC.hpp"
 #endif
 
@@ -147,9 +163,27 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::ReadMessage(uint8_t fifo_index, can_f
     return Status::SUCCESS;
 }
 
-MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const can_frame_t& frame)
+MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t tx_fifo_index, const can_frame_t& frame)
 {
-    if (!IsTxAvailable(fifo_index)) {
+    if (auto status = QueueMessage(tx_fifo_index, frame); status != Status::SUCCESS) {
+        return status;
+    }
+    SetTxRTS(tx_fifo_index);
+    return Status::SUCCESS;
+}
+
+MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t tx_fifo_index, const can_fd_frame_t& frame)
+{
+    if (auto status = QueueMessage(tx_fifo_index, frame); status != Status::SUCCESS) {
+        return status;
+    }
+    SetTxRTS(tx_fifo_index);
+    return Status::SUCCESS;
+}
+
+MCP2518::Status MCP2518_FAST_PATH MCP2518::QueueMessage(uint8_t tx_fifo_index, const can_frame_t& frame)
+{
+    if (!IsTxAvailable(tx_fifo_index)) {
         return Status::TX_ALL_BUSY;
     }
 
@@ -170,8 +204,8 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const
     spi_transaction_t t = {
         .flags = 0,
         .cmd = std::to_underlying(SPICommand::WRITE),
-        .addr = getTxFifoAddress(fifo_index),
-        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[fifo_index]) * 8,
+        .addr = getTxFifoAddress(tx_fifo_index),
+        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]) * 8,
         .rxlength = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
@@ -179,17 +213,19 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 
-    incrementTxFifoAddress(fifo_index);
+    // increment locally
+    if (++_tx_fifos_indices[tx_fifo_index] == cTxFIFOSizes[tx_fifo_index]) {
+        _tx_fifos_indices[tx_fifo_index] = 0;
+    }
     return Status::SUCCESS;
 }
 
-MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const can_fd_frame_t& frame)
+MCP2518::Status MCP2518_FAST_PATH MCP2518::QueueMessage(uint8_t tx_fifo_index, const can_fd_frame_t& frame)
 {
-    if (!IsTxAvailable(fifo_index)) {
+    if (!IsTxAvailable(tx_fifo_index)) {
         return Status::TX_ALL_BUSY;
     }
-
-    MCP2518_ASSERT(cTxFIFOPayloadSizes[fifo_index] == frame.data.size());
+    MCP2518_ASSERT(cTxFIFOPayloadSizes[tx_fifo_index] == frame.data.size());
 
     auto msg = static_cast<TXMessage<>*>(_tx_buffer);
 
@@ -209,8 +245,8 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const
     spi_transaction_t t = {
         .flags = 0,
         .cmd = std::to_underlying(SPICommand::WRITE),
-        .addr = getTxFifoAddress(fifo_index),
-        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[fifo_index]) * 8,
+        .addr = getTxFifoAddress(tx_fifo_index),
+        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]) * 8,
         .rxlength = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
@@ -218,8 +254,20 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::SendMessage(uint8_t fifo_index, const
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 
-    incrementTxFifoAddress(fifo_index);
+    // increment locally
+    if (++_tx_fifos_indices[tx_fifo_index] == cTxFIFOSizes[tx_fifo_index]) {
+        _tx_fifos_indices[tx_fifo_index] = 0;
+    }
     return Status::SUCCESS;
+}
+
+void MCP2518_FAST_PATH MCP2518::SetTxRTS(uint8_t tx_fifo_index)
+{
+    // increment on MCP
+    _fifo_configs[tx_fifo_index].UINC = 1;
+    _fifo_configs[tx_fifo_index].TXREQ = 1;
+    writeRegister(_fifo_configs[tx_fifo_index].address,
+                  _fifo_configs[tx_fifo_index].bits.to_ulong());
 }
 
 bool MCP2518_FAST_PATH MCP2518::IsRxAvailable(uint8_t fifo_index) const
@@ -361,7 +409,7 @@ void MCP2518::configDefault()
     SetMode(Mode::NORMAL);
 }
 
-#ifdef CONFIG_MCP2518_CRC_READ
+#ifdef CONFIG_MCP2518_CRC_ENABLE
 
 uint32_t MCP2518::readRegister(address_t address) const
 {
@@ -399,6 +447,36 @@ uint32_t MCP2518::readRegister(address_t address) const
     return *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(_rx_buffer) + 1);
 }
 
+void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value) const
+{
+    constexpr size_t cCrcBufferSize = 7;
+    std::array<uint8_t, cCrcBufferSize> crc_buffer = {
+        static_cast<uint8_t>((std::to_underlying(SPICommand::WRITE_CRC) << 4) | ((address >> 8)  & 0xF)),
+        static_cast<uint8_t>(address),
+        sizeof(uint32_t)
+    };
+    *reinterpret_cast<uint32_t*>(&crc_buffer[3]) = value;
+    uint16_t crc = calculate_crc(crc_buffer);
+
+    spi_transaction_t t = {
+        .flags = 0,
+        .cmd = std::to_underlying(SPICommand::WRITE_CRC),
+        .addr = address,
+        .length = (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t)) * 8,
+        .rxlength = 0,
+        .user = nullptr,
+        .tx_buffer = _tx_buffer,
+        .rx_buffer = nullptr,
+    };
+    memcpy(_tx_buffer, &crc_buffer[2], sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t));
+    ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
+
+    Registers::CRC crc_reg { readRegister(crc_reg.address) };
+    if (crc_reg.CRCVAL != crc) {
+        ESP_LOGE(TAG, "CRC mismatch, read 0x%x, calculated 0x%x", crc_reg.CRCVAL, crc);
+    }
+}
+
 #else
 
 uint32_t MCP2518_FAST_PATH MCP2518::readRegister(address_t address) const
@@ -417,8 +495,6 @@ uint32_t MCP2518_FAST_PATH MCP2518::readRegister(address_t address) const
     return *(uint32_t*)t.rx_data;
 }
 
-#endif // CONFIG_MCP2518_CRC_READ
-
 void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value) const
 {
     spi_transaction_t t = {
@@ -434,6 +510,8 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
     *(uint32_t*)(&t.tx_data) = value;
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 }
+
+#endif // CONFIG_MCP2518_CRC_ENABLE
 
 void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_frame_t& frame, uint32_t& timestamp)
 {

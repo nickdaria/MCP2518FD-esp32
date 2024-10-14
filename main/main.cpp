@@ -52,7 +52,8 @@ extern "C" void app_main(void)
     for (;;) {
         uint32_t ts;
         if (mcp.ReadMessage(frame, ts) != cbm::MCP2518::Status::NO_MSG) {
-            ESP_LOGI(TAG, "hello");
+            mcp.SendMessage(frame);
+            ESP_LOGI(TAG, "Frame received at %luus", ts);
         }
     }
 }

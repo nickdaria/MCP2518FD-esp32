@@ -13,12 +13,12 @@ menu "MCP2518FD Configuration"
             Enables rather verbose printing that may be useful for debugging, e.g.
             printing on every register read and write
 
-    config MCP2518_CRC_READ
-        bool "Enable CRC check on register reads"
+    config MCP2518_CRC_ENABLE
+        bool "Enable CRC check on register reads and writes"
         default n
         help
-            If enabled, all register reads will use the READ_CRC opcode and compare the CRC
-            read from the MCP2518FD with one calculated locally
+            If enabled, all register reads and writes will use the *_CRC opcodes
+            and compare the locally calculated CRC with one read from the MCP2518
 
     config MCP2518_ATTR
         bool "Place fast path functions in IRAM"
