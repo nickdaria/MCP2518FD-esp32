@@ -36,4 +36,11 @@ menu "MCP2518FD Configuration"
             if another component in the application already installs the service, this option allows for this component
             to skip this step.
 
+    config EXTENDED_ID_HW_WORKAROUND
+        bool "Extended ID HW Workaround"
+        default n
+        help
+            For unknown reasons, when setting the IDE bit (extended ID), the MCP2518FD seems to rotate the standard ID
+            and extended ID bits. If you are seeing unexpected headers when extended IDs are used, try enabling.
+
 endmenu

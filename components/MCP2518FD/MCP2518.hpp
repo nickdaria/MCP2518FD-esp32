@@ -71,6 +71,8 @@ constexpr auto create_array()
 class MCP2518 {
 public:
     using address_t = uint16_t;
+    using rx_callback_t = void(*)(MCP2518&, void* user_data);
+    using tx_callback_t = void(*)(MCP2518&);
 
     /******************************
      *  Public structs and enums  *
@@ -158,8 +160,6 @@ public:
         , _txq_base_address(GetTXQBaseAddress(_tef_base_address))
         , _tx_fifos_base_addresses(GetTxFIFOsBaseAddresses(_txq_base_address))
         , _rx_fifos_base_addresses(GetRxFIFOsBaseAddresses(_tx_fifos_base_addresses.back()))
-        , _tx_fifos_indices()
-        , _rx_fifos_indices()
         , _fifo_configs(Registers::getFifoConfigs())
         , _tx_fifo_full()
         , _rx_fifo_not_empty()
@@ -179,6 +179,12 @@ public:
      * @param bitrate in bits per second
      */
     void SetNominalBitrate(int32_t bitrate);
+
+    int32_t GetNominalBitrate() { return _nominalBitrate; }
+
+    int32_t GetBaudrate() { return GetNominalBitrate(); }
+
+    int32_t GetDataBitrate() { return _dataBitrate; }
 
     /**
      * @brief Set the Data Bitrate
@@ -396,11 +402,28 @@ public:
     void rxIsr()
     {
         _rx_fifo_not_empty = !_rx_fifo_not_empty;
+        if (_rxCb && _rx_fifo_not_empty) {
+            _rxCb(*this, _userData);
+        }
     }
 
     void txIsr()
     {
         _tx_fifo_full = !_tx_fifo_full;
+        if (_txCb) {
+            _txCb(*this);
+        }
+    }
+
+    void RegisterRxCallback(rx_callback_t cb, void* user_data)
+    {
+        _rxCb = cb;
+        _userData = user_data;
+    }
+
+    void RegisterTxCallback(tx_callback_t cb)
+    {
+        _txCb = cb;
     }
 
 private:
@@ -482,7 +505,7 @@ private:
         // to phase shifts in the edges. The time segment may be automatically lengthened during
         // resynchronization to compensate for the phase shift.
         int PHSEG1 = 1;
-        static constexpr int cMaxNTSEG1 = 256;
+        static constexpr int cMaxNTSEG1 = 255;
         static constexpr int cMaxDTSEG1 = 32;
         // Phase Segment 2 (PHSEG2) - This time segment compensates for errors that may occur due
         // to phase shifts in the edges. The time segment may be automatically shortened during
@@ -520,13 +543,13 @@ private:
                         continue;
                     }
                     PHSEG2 = (phase_two_percent * tq_per_bit) / 100;
-                    if ((nominal && (PHSEG2 > cMaxNTSEG2 || PHSEG2 == 0)) ||
-                        (!nominal && (PHSEG2 > cMaxDTSEG2 || PHSEG2 == 0))) {
+                    if ((nominal && (PHSEG2 >= cMaxNTSEG2 || PHSEG2 == 0)) ||
+                        (!nominal && (PHSEG2 >= cMaxDTSEG2 || PHSEG2 == 0))) {
                         continue;
                     }
                     PHSEG1 = tq_per_bit - PHSEG2 - SYNC - PRSEG;
-                    if ((nominal && (PHSEG1 > cMaxNTSEG1 || PHSEG1 == 0)) ||
-                        (!nominal && (PHSEG1 > cMaxDTSEG1 || PHSEG1 == 0))) {
+                    if ((nominal && (PHSEG1 >= cMaxNTSEG1 || PHSEG1 == 0)) ||
+                        (!nominal && (PHSEG1 >= cMaxDTSEG1 || PHSEG1 == 0))) {
                         continue;
                     }
                     SJW = std::min(PHSEG1, PHSEG2);
@@ -864,6 +887,7 @@ private:
             static constexpr address_t address = 0x004;
 
             explicit C1NBTCFG(uint32_t bits) : bits(bits) {}
+
             constexpr C1NBTCFG(BitTiming bt) {
                 SJW = bt.SJW - 1;
                 padding0 = 0;
@@ -1155,7 +1179,7 @@ private:
             explicit C1RXIF(uint32_t bits) : bits(bits) {}
             bool IsInterruptPending(uint8_t fifo_index)
             {
-                return bits[fifo_index + 1];
+                return static_cast<bool>(bits[fifo_index + 1]);
             }
             union {
                 struct {
@@ -1591,7 +1615,13 @@ private:
             constexpr C1FIFOCON(uint8_t fifo_index)
                 : fifo_index(fifo_index)
                 , address(base_address + (3 * fifo_index * sizeof(uint32_t)))
-                , bits(0) {}
+                , TFNRFIE(0)
+                , TFHRFHIE(0)
+                , TFERFFIE(0)
+                , RXOVIE(0)
+                 {}
+
+            ~C1FIFOCON() = default;
 
             union {
                 struct {
@@ -2150,12 +2180,7 @@ private:
      * @return address_t 12 bit address of the next RXMessage in the MCP2518's RAM
      *
      */
-    address_t getRxFifoAddress(size_t rx_fifo_index) const
-    {
-        return _rx_fifos_base_addresses[rx_fifo_index]
-            + (_rx_fifos_indices[rx_fifo_index]
-                * (sizeof(RXMessage<>::Header) + cRxFIFOPayloadSizes[rx_fifo_index]));
-    }
+    address_t getRxFifoAddress(size_t rx_fifo_index) const;
 
     /**
      * @brief Increments the RX FIFO tail locally and on MCP2518
@@ -2164,11 +2189,6 @@ private:
      */
     void incrementRxFifoAddress(size_t rx_fifo_index)
     {
-        // increment locally
-        if (++_rx_fifos_indices[rx_fifo_index] == cRxFIFOSizes[rx_fifo_index]) {
-            _rx_fifos_indices[rx_fifo_index] = 0;
-        }
-        // increment on MCP
         int config_index = rx_fifo_index + cNumTxFIFOs;
         _fifo_configs[config_index].UINC = 1;
         writeRegister(_fifo_configs[config_index].address, _fifo_configs[config_index].bits.to_ulong());
@@ -2181,12 +2201,7 @@ private:
      * @return address_t 12 bit address of the next TXMessage in the MCP2518's RAM
      *
      */
-    address_t getTxFifoAddress(size_t tx_fifo_index) const
-    {
-        return _tx_fifos_base_addresses[tx_fifo_index]
-            + (_tx_fifos_indices[tx_fifo_index]
-                * (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]));
-    }
+    address_t getTxFifoAddress(size_t tx_fifo_index) const;
 
     /********************
      *  Private fields  *
@@ -2199,8 +2214,6 @@ private:
 
     uint8_t _tef_index = 0;
     uint8_t _txq_index = 0;
-    std::array<uint8_t, cNumTxFIFOs> _tx_fifos_indices;
-    std::array<uint8_t, cNumRxFIFOs> _rx_fifos_indices;
 
     std::array<Registers::C1FIFOCON, cNumFIFOs> _fifo_configs;
 
@@ -2212,6 +2225,11 @@ private:
     gpio_num_t _tx_intr_pin = GPIO_NUM_NC;
     void* _rx_buffer = nullptr;
     void* _tx_buffer = nullptr;
+    rx_callback_t _rxCb = nullptr;
+    void* _userData = nullptr;
+    tx_callback_t _txCb = nullptr;
+    int32_t _nominalBitrate = 0;
+    int32_t _dataBitrate = 0;
 };
 
 } // namespace cbm

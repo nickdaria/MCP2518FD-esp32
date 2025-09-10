@@ -100,6 +100,7 @@ void MCP2518::begin(const Config& config)
         .cs_ena_posttrans = 0,
         .clock_speed_hz = cSpiClockHz,
         .input_delay_ns = 0,
+        .sample_point = SPI_SAMPLING_POINT_PHASE_0,
         .spics_io_num = config.cs_pin,
         .flags = 0,
         .queue_size = 4,
@@ -128,6 +129,7 @@ void MCP2518::SetNominalBitrate(int32_t bitrate)
     WRITE_REGISTER(reg);
 
     SetMode(Mode::NORMAL);
+    _nominalBitrate = bitrate;
 }
 
 void MCP2518::SetDataBitrate(int32_t bitrate)
@@ -139,6 +141,7 @@ void MCP2518::SetDataBitrate(int32_t bitrate)
     WRITE_REGISTER(reg);
 
     SetMode(Mode::NORMAL);
+    _dataBitrate = bitrate;
 }
 
 void MCP2518::SetMode(Mode mode)
@@ -193,8 +196,22 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::QueueMessage(uint8_t tx_fifo_index, c
 
     auto msg = static_cast<TXMessage<>*>(_tx_buffer);
 
-    msg->header.SID = frame.standard_id;
-    msg->header.EID = frame.extended_id;
+#ifdef CONFIG_EXTENDED_ID_HW_WORKAROUND
+    /**
+     *  HW workaround. For some reason, the standard ID and extended ID
+     *  get bitwise rotated on the MCP2518FD when the IDE flag is set.
+     */
+    if (frame.frame_format_flag) {
+        msg->header.EID = frame.standard_id;
+        msg->header.SID = frame.extended_id >> 7;
+        msg->header.EID |= (((uint32_t)frame.extended_id) << 11);
+    } else
+#endif
+    {
+        msg->header.SID = frame.standard_id;
+        msg->header.EID = frame.extended_id;
+    }
+    msg->header.SID11 = 0;
     msg->header.DLC = frame.dlc;
     msg->header.IDE = frame.frame_format_flag;
     msg->header.RTR = frame.rtr;
@@ -205,22 +222,22 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::QueueMessage(uint8_t tx_fifo_index, c
     auto aligned_src = std::assume_aligned<sizeof(uint32_t)>(static_cast<const void*>(frame.data.data()));
     memcpy(aligned_dst, aligned_src, can_frame_t::cMaxCanLength);
 
+    const address_t writeAddress = getTxFifoAddress(tx_fifo_index);
+    const size_t writeLength = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]);
+
     spi_transaction_t t = {
         .flags = 0,
         .cmd = std::to_underlying(SPICommand::WRITE),
-        .addr = getTxFifoAddress(tx_fifo_index),
-        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]) * 8,
+        .addr = writeAddress,
+        .length = writeLength * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
         .rx_buffer = nullptr,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 
-    // increment locally
-    if (++_tx_fifos_indices[tx_fifo_index] == cTxFIFOSizes[tx_fifo_index]) {
-        _tx_fifos_indices[tx_fifo_index] = 0;
-    }
     return Status::SUCCESS;
 }
 
@@ -246,28 +263,27 @@ MCP2518::Status MCP2518_FAST_PATH MCP2518::QueueMessage(uint8_t tx_fifo_index, c
     auto aligned_src = std::assume_aligned<sizeof(uint32_t)>(static_cast<const void*>(frame.data.data()));
     memcpy(aligned_dst, aligned_src, frame.dlc);
 
+    const address_t writeAddress = getTxFifoAddress(tx_fifo_index);
+    const size_t writeLength = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]);
+
     spi_transaction_t t = {
         .flags = 0,
         .cmd = std::to_underlying(SPICommand::WRITE),
-        .addr = getTxFifoAddress(tx_fifo_index),
-        .length = (sizeof(TXMessage<>::Header) + cTxFIFOPayloadSizes[tx_fifo_index]) * 8,
+        .addr = writeAddress,
+        .length = writeLength * 8, // in bits
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
         .rx_buffer = nullptr,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 
-    // increment locally
-    if (++_tx_fifos_indices[tx_fifo_index] == cTxFIFOSizes[tx_fifo_index]) {
-        _tx_fifos_indices[tx_fifo_index] = 0;
-    }
     return Status::SUCCESS;
 }
 
 void MCP2518_FAST_PATH MCP2518::SetTxRTS(uint8_t tx_fifo_index)
 {
-    // increment on MCP
     _fifo_configs[tx_fifo_index].UINC = 1;
     _fifo_configs[tx_fifo_index].TXREQ = 1;
     writeRegister(_fifo_configs[tx_fifo_index].address,
@@ -277,7 +293,7 @@ void MCP2518_FAST_PATH MCP2518::SetTxRTS(uint8_t tx_fifo_index)
 bool MCP2518_FAST_PATH MCP2518::IsRxAvailable(uint8_t fifo_index) const
 {
     if (_rx_intr_pin != GPIO_NUM_NC && fifo_index == cRxInterruptFIFO) {
-        return !_rx_fifo_not_empty;
+        return gpio_get_level(_rx_intr_pin) == 0;
     }
     Registers::C1RXIF reg { readRegister(reg.address) };
     return reg.IsInterruptPending(fifo_index + cNumTxFIFOs);
@@ -361,11 +377,12 @@ void MCP2518::configDefault()
     }
     WRITE_REGISTER(cfg_reg);
 
-    constexpr Registers::C1NBTCFG bit_timing_reg { { cSysClockHz, cDefaultNominalBitrate, true } };
+    constexpr BitTiming bt { cSysClockHz, cDefaultNominalBitrate, true };
+    Registers::C1NBTCFG bit_timing_reg { bt };
     MCP2518_DEBUG_PRINT("Setting nominal bitrate register to 0x%lx", bit_timing_reg.bits.to_ulong());
     WRITE_REGISTER(bit_timing_reg);
 
-    constexpr Registers::C1DBTCFG data_bit_timing_reg { { cSysClockHz, cDefaultDataBitrate, false } };
+    Registers::C1DBTCFG data_bit_timing_reg { { cSysClockHz, cDefaultDataBitrate, false } };
     WRITE_REGISTER(data_bit_timing_reg);
 
     Registers::C1TSCON ts_cfg(0);
@@ -424,6 +441,7 @@ uint32_t MCP2518::readRegister(address_t address) const
         // 1 byte for length, 4 bytes for register, 2 for CRC
         .length = (sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint16_t)) * 8,
         .rxlength = (sizeof(uint32_t) + sizeof(uint16_t)) * 8,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
         .rx_buffer = _rx_buffer,
@@ -448,7 +466,9 @@ uint32_t MCP2518::readRegister(address_t address) const
     if (crc != read_crc) {
         ESP_LOGE(TAG, "CRC mismatch, read 0x%x, calculated 0x%x", read_crc, crc);
     }
-    return *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(_rx_buffer) + 1);
+    uint32_t value = 0;
+    memcpy(&value, static_cast<uint8_t*>(_rx_buffer) + 1, sizeof(value));
+    return value;
 }
 
 void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value) const
@@ -468,6 +488,7 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
         .addr = address,
         .length = (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t)) * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
         .rx_buffer = nullptr,
@@ -491,12 +512,15 @@ uint32_t MCP2518_FAST_PATH MCP2518::readRegister(address_t address) const
         .addr = address,
         .length = sizeof(uint32_t) * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = nullptr,
         .rx_buffer = nullptr,
     };
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
-    return *(uint32_t*)t.rx_data;
+    uint32_t data;
+    memcpy(&data, t.rx_data, sizeof(t.rx_data));
+    return data;
 }
 
 void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value) const
@@ -507,6 +531,7 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
         .addr = address,
         .length = sizeof(uint32_t) * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = nullptr,
         .rx_buffer = nullptr,
@@ -519,7 +544,7 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
 
 void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_frame_t& frame, uint32_t& timestamp)
 {
-    address_t rxFifoReadAddress = getRxFifoAddress(rx_fifo_index);
+    const address_t rxFifoReadAddress = getRxFifoAddress(rx_fifo_index);
     MCP2518_DEBUG_PRINT("Reading from address 0x%x", rxFifoReadAddress);
     spi_transaction_t t = {
         .flags = 0,
@@ -527,6 +552,7 @@ void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_f
         .addr = rxFifoReadAddress,
         .length = (sizeof(RXMessage<>::Header) + cRxFIFOPayloadSizes[rx_fifo_index])  * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = nullptr,
         .rx_buffer = _rx_buffer,
@@ -540,9 +566,21 @@ void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_f
     void* aligned_src = std::assume_aligned<sizeof(uint32_t)>(static_cast<uint8_t*>(_rx_buffer) + sizeof(header));
     memcpy(aligned_dst, aligned_src, can_frame_t::cMaxCanLength);
 
+#ifdef CONFIG_EXTENDED_ID_HW_WORKAROUND
+    /**
+     *  HW workaround. For some reason, the standard ID and extended ID
+     *  get bitwise rotated on the MCP2518FD when the IDE flag is set.
+     */
+    if (header.IDE) {
+        frame.standard_id   = header.EID;
+        frame.extended_id   = (header.EID >> 11) | ((uint32_t) header.SID << 7);
+    } else
+#endif
+    {
+        frame.standard_id   = header.SID;
+        frame.extended_id   = header.EID;
+    }
     frame.dlc               = header.DLC;
-    frame.standard_id       = header.SID;
-    frame.extended_id       = header.EID;
     frame.error_flag        = header.ESI;
     frame.rtr               = header.RTR;
     frame.frame_format_flag = header.IDE;
@@ -563,6 +601,7 @@ void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_f
         .addr = rxFifoReadAddress,
         .length = (sizeof(RXMessage<>::Header) + cRxFIFOPayloadSizes[rx_fifo_index])  * 8,
         .rxlength = 0,
+        .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = nullptr,
         .rx_buffer = _rx_buffer,
@@ -576,15 +615,36 @@ void MCP2518_FAST_PATH MCP2518::readMessageInternal(uint8_t rx_fifo_index, can_f
     void* aligned_src = std::assume_aligned<sizeof(uint32_t)>(static_cast<uint8_t*>(_rx_buffer) + sizeof(header));
     memcpy(aligned_dst, aligned_src, cRxFIFOPayloadSizes[rx_fifo_index]);
 
+#ifdef CONFIG_EXTENDED_ID_HW_WORKAROUND
+    if (header.IDE) {
+        frame.standard_id   = header.EID;
+        frame.extended_id   = (header.EID >> 11) | ((uint32_t) header.SID << 7);
+    } else
+#endif
+    {
+        frame.standard_id   = header.SID;
+        frame.extended_id   = header.EID;
+    }
     frame.dlc               = header.DLC;
-    frame.standard_id       = header.SID;
-    frame.extended_id       = header.EID;
     frame.sid_11            = header.SID11;
     frame.frame_format_flag = header.IDE;
-
-    timestamp = header.RXMSGTS;
+    timestamp               = header.RXMSGTS;
 
     incrementRxFifoAddress(rx_fifo_index);
+}
+
+MCP2518::address_t MCP2518_FAST_PATH MCP2518::getTxFifoAddress(size_t tx_fifo_index) const
+{
+    address_t addr = _fifo_configs[tx_fifo_index].address + (2 * sizeof(uint32_t));
+    Registers::C1FIFOUA user_address(tx_fifo_index, readRegister(addr));
+    return _tx_fifos_base_addresses[0] + user_address.FIFOUA;
+}
+
+MCP2518::address_t MCP2518_FAST_PATH MCP2518::getRxFifoAddress(size_t rx_fifo_index) const
+{
+    address_t addr = _fifo_configs[rx_fifo_index + cNumTxFIFOs].address + (2 * sizeof(uint32_t));
+    Registers::C1FIFOUA user_address(rx_fifo_index, readRegister(addr));
+    return _tx_fifos_base_addresses[0] + user_address.FIFOUA;
 }
 
 } // namespace cbm
