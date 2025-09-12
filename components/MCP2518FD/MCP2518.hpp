@@ -2152,6 +2152,14 @@ private:
     void writeRegister(address_t address, uint32_t value) const;
 
     /**
+     * @brief Write a single register in 4 separate 8-bit SFR Write transactions
+     * 
+     * @param address 12 bits, `address` field of `Registers` structs
+     * @param value raw 32 bit value of register, `bits` field of `Registers` structs
+     */
+    void writeRegisterSFR(address_t address, uint32_t value) const;
+
+    /**
      * @brief Reads from RX FIFO without checking that a message is available
      * 
      * @param frame Output. CAN 2.0 frame

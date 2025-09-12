@@ -363,7 +363,7 @@ void MCP2518::configDefault()
 
     // Default settings, disable CRC + ECC interrupts
     writeRegister(Registers::OSC::address, 0);
-    writeRegister(Registers::IOCON::address, 0);
+    writeRegisterSFR(Registers::IOCON::address, 0);
     writeRegister(Registers::CRC::address, 0);
     writeRegister(Registers::ECCCON::address, 0);
 
@@ -475,30 +475,69 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
 {
     constexpr size_t cCrcBufferSize = 7;
     std::array<uint8_t, cCrcBufferSize> crc_buffer = {
-        static_cast<uint8_t>((std::to_underlying(SPICommand::WRITE_CRC) << 4) | ((address >> 8)  & 0xF)),
+        static_cast<uint8_t>((std::to_underlying(SPICommand::WRITE_CRC) << 4) | ((address >> 8) & 0xF)),
         static_cast<uint8_t>(address),
         sizeof(uint32_t)
     };
-    *reinterpret_cast<uint32_t*>(&crc_buffer[3]) = value;
+    memcpy(&crc_buffer[3], &value, sizeof(value));
     uint16_t crc = calculate_crc(crc_buffer);
 
+    constexpr size_t cDataLength = sizeof(uint32_t) + sizeof(uint8_t);
+    constexpr size_t cTransactionLength = cDataLength + sizeof(uint16_t);
     spi_transaction_t t = {
         .flags = 0,
         .cmd = std::to_underlying(SPICommand::WRITE_CRC),
         .addr = address,
-        .length = (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t)) * 8,
+        .length = cTransactionLength * 8,
         .rxlength = 0,
         .override_freq_hz = 0,
         .user = nullptr,
         .tx_buffer = _tx_buffer,
         .rx_buffer = nullptr,
     };
-    memcpy(_tx_buffer, &crc_buffer[2], sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t));
+    memcpy(_tx_buffer, &crc_buffer[2], cDataLength);
+    memcpy(static_cast<uint8_t*>(_tx_buffer) + cDataLength, &crc, sizeof(crc));
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
 
     Registers::CRC crc_reg { readRegister(crc_reg.address) };
     if (crc_reg.CRCVAL != crc) {
         ESP_LOGE(TAG, "CRC mismatch, read 0x%x, calculated 0x%x", crc_reg.CRCVAL, crc);
+    }
+}
+
+void MCP2518::writeRegisterSFR(address_t address, uint32_t value) const
+{
+    for (size_t i = 0; i < sizeof(value); ++i) {
+        constexpr size_t cCrcBufferSize = 4;
+        std::array<uint8_t, cCrcBufferSize> crc_buffer = {
+            static_cast<uint8_t>((std::to_underlying(SPICommand::WRITE_CRC) << 4) | ((address >> 8) & 0xF)),
+            static_cast<uint8_t>(address),
+            sizeof(uint8_t),
+            static_cast<uint8_t>(value)
+        };
+        uint16_t crc = calculate_crc(crc_buffer);
+
+        constexpr size_t cDataLength = sizeof(uint8_t) + sizeof(uint8_t);
+        constexpr size_t cTransactionLength = cDataLength + sizeof(uint16_t);
+        spi_transaction_t t = {
+            .flags = 0,
+            .cmd = std::to_underlying(SPICommand::WRITE_CRC),
+            .addr = address,
+            .length = cTransactionLength * 8,
+            .rxlength = 0,
+            .override_freq_hz = 0,
+            .user = nullptr,
+            .tx_buffer = _tx_buffer,
+            .rx_buffer = nullptr,
+        };
+        memcpy(_tx_buffer, &crc_buffer[2], cDataLength);
+        memcpy(static_cast<uint8_t*>(_tx_buffer) + cDataLength, &crc, sizeof(crc));
+        ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
+
+        Registers::CRC crc_reg { readRegister(crc_reg.address) };
+        if (crc_reg.CRCVAL != crc) {
+            ESP_LOGE(TAG, "CRC mismatch, read 0x%x, calculated 0x%x", crc_reg.CRCVAL, crc);
+        }
     }
 }
 
@@ -538,6 +577,25 @@ void MCP2518_FAST_PATH MCP2518::writeRegister(address_t address, uint32_t value)
     };
     *(uint32_t*)(&t.tx_data) = value;
     ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
+}
+
+void MCP2518::writeRegisterSFR(address_t address, uint32_t value) const
+{
+    for (size_t i = 0; i < sizeof(value); ++i) {
+        spi_transaction_t t = {
+            .flags = SPI_TRANS_USE_TXDATA,
+            .cmd = std::to_underlying(SPICommand::WRITE),
+            .addr = address,
+            .length = 8,
+            .rxlength = 0,
+            .override_freq_hz = 0,
+            .user = nullptr,
+            .tx_data = { static_cast<uint8_t>(value) },
+            .rx_buffer = nullptr,
+        };
+        value >>= 8;
+        ESP_ERROR_CHECK(spi_device_polling_transmit(_spi, &t));
+    }
 }
 
 #endif // CONFIG_MCP2518_CRC_ENABLE
