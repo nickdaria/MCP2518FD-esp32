@@ -305,7 +305,7 @@ bool MCP2518_FAST_PATH MCP2518::IsTxAvailable(uint8_t fifo_index) const
         return !_tx_fifo_full;
     }
     Registers::C1TXIF reg { readRegister(reg.address) };
-    return !reg.IsInterruptPending(fifo_index);
+    return reg.IsInterruptPending(fifo_index);
 }
 
 bool MCP2518::IsCANError() const
